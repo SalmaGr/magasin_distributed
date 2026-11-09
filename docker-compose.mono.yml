@@ -1,0 +1,222 @@
+# ============================================================
+#  SMART LIBRARY — DATA LAKEHOUSE (Apache Iceberg)
+#  Stack : MinIO · Postgres · Lakekeeper (REST Catalog) ·
+#          Apache Spark 3.4 · Apache Iceberg · JupyterLab
+#
+#  CORRECTIONS APPLIQUÉES (v2 → v2-fixed) :
+#   1. MinIO écoute désormais réellement sur le port 9010 en interne
+#      (--address ":9010"), pour que le port publié côté hôte (9010)
+#      corresponde au port utilisé par Lakekeeper/le navigateur.
+#      Avant : conteneur écoutait sur 9000 mais publié en 9010 → le
+#      navigateur (via l'astuce /etc/hosts "127.0.0.1 minio") tapait
+#      sur le port 9000 hôte, qui n'était pas publié → échec réseau.
+#   2. storage-profile "endpoint" mis à jour vers http://minio:9010
+#      pour matcher le nouveau port d'écoute réel de MinIO.
+#   3. Le CORS est désormais configuré de 2 façons en parallèle :
+#      - MINIO_API_CORS_ALLOW_ORIGIN (variable d'env, peut être
+#        ignorée au démarrage selon la version de MinIO — bug connu)
+#      - ET via "mc admin config set" + "mc admin service restart"
+#        dans minio-init (méthode fiable qui a résolu le problème
+#        sur le projet v1)
+#   4. sts-enabled: true conservé (vended-credentials) +
+#      remote-signing-enabled: true ajouté explicitement, pour éviter
+#      tout changement de comportement par défaut de Lakekeeper selon
+#      la version (cf. breaking change v0.11.0).
+# ============================================================
+
+networks:
+  icebergv2-net:
+    driver: bridge
+
+volumes:
+  icebergv2-minio-data:
+  icebergv2-pg-data:
+
+services:
+
+  # ──────────────────────────────────────────────
+  # 1. MinIO — Data Lake (stockage objet S3-compatible)
+  # ──────────────────────────────────────────────
+  minio:
+    image: minio/minio:latest
+    container_name: icebergv2-minio
+    ports:
+      - "9010:9010"   # port hôte = port conteneur (voir --address ci-dessous)
+      - "9011:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin123
+      # Variable d'env native MinIO pour le CORS. Gardée en complément
+      # du fallback "mc admin config set" fait dans minio-init, au cas
+      # où l'un des deux mécanismes serait ignoré au démarrage.
+      # ⚠️ Doit correspondre au PORT HÔTE utilisé par le navigateur
+      # pour Lakekeeper (8182 ici), pas au port interne du conteneur.
+      MINIO_API_CORS_ALLOW_ORIGIN: "http://localhost:8182,http://127.0.0.1:8182,http://localhost:3001,http://127.0.0.1:3001"
+    # --address ":9010" fait écouter l'API S3 de MinIO sur le port 9010
+    # à l'intérieur du conteneur (au lieu du 9000 par défaut), pour que
+    # le port publié côté hôte (9010) corresponde réellement au port
+    # d'écoute interne. Nécessaire uniquement parce que ce projet tourne
+    # en parallèle d'un autre stack MinIO déjà sur le port 9000.
+    command: server /data --address ":9010" --console-address ":9001"
+    volumes:
+      - icebergv2-minio-data:/data
+    networks:
+      - icebergv2-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9010/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  minio-init:
+    image: minio/mc:latest
+    container_name: icebergv2-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    networks:
+      - icebergv2-net
+    # Bloc littéral "|" (préserve les retours à la ligne) + ";" explicite
+    # après CHAQUE commande, pour éviter que deux commandes ne fusionnent
+    # accidentellement en une seule ligne shell (bug rencontré sur v1).
+    entrypoint: |
+      sh -c "
+        mc alias set local http://minio:9010 minioadmin minioadmin123;
+        mc mb --ignore-existing local/lakehouse;
+        mc admin config reset local api;
+        mc admin config set local api cors_allow_origin='http://localhost:8182,http://127.0.0.1:8182,http://localhost:3001,http://127.0.0.1:3001';
+        mc admin service restart local;
+        echo 'Bucket lakehouse + CORS configurés avec succès';
+      "
+
+  # ──────────────────────────────────────────────
+  # 2. PostgreSQL — Backend du catalogue Lakekeeper
+  #    Utilisateur créé ici : lakekeeper / lakekeeper
+  #    (DOIT correspondre exactement aux URLs ci-dessous)
+  # ──────────────────────────────────────────────
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: icebergv2-postgres
+    environment:
+      POSTGRES_USER: lakekeeper
+      POSTGRES_PASSWORD: lakekeeper
+      POSTGRES_DB: lakekeeper
+    ports:
+      - "5433:5432"
+    volumes:
+      - icebergv2-pg-data:/var/lib/postgresql/data
+    networks:
+      - icebergv2-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lakekeeper -d lakekeeper"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ──────────────────────────────────────────────
+  # 3a. Lakekeeper — Migration du schéma Postgres
+  #     DOIT tourner et se terminer AVANT que "serve" démarre.
+  # ──────────────────────────────────────────────
+  lakekeeper-migrate:
+    image: quay.io/lakekeeper/catalog:latest
+    container_name: icebergv2-lakekeeper-migrate
+    command: ["migrate"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      LAKEKEEPER__PG_ENCRYPTION_KEY: "smartlibrary-thesis-encryption-key"
+      LAKEKEEPER__PG_DATABASE_URL_READ:  "postgresql://lakekeeper:lakekeeper@postgres:5432/lakekeeper"
+      LAKEKEEPER__PG_DATABASE_URL_WRITE: "postgresql://lakekeeper:lakekeeper@postgres:5432/lakekeeper"
+      RUST_LOG: "info"
+    networks:
+      - icebergv2-net
+
+  # ──────────────────────────────────────────────
+  # 3b. Lakekeeper — Catalogue REST Apache Iceberg
+  # ──────────────────────────────────────────────
+  lakekeeper:
+    image: quay.io/lakekeeper/catalog:latest
+    container_name: icebergv2-lakekeeper
+    command: ["serve"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      lakekeeper-migrate:
+        condition: service_completed_successfully
+    environment:
+      LAKEKEEPER__PG_ENCRYPTION_KEY: "smartlibrary-thesis-encryption-key"
+      LAKEKEEPER__PG_DATABASE_URL_READ:  "postgresql://lakekeeper:lakekeeper@postgres:5432/lakekeeper"
+      LAKEKEEPER__PG_DATABASE_URL_WRITE: "postgresql://lakekeeper:lakekeeper@postgres:5432/lakekeeper"
+      # ⚠️ Doit correspondre au PORT HÔTE (8182), pas au port interne 8181
+      LAKEKEEPER__ALLOW_ORIGIN: "http://localhost:8182,http://127.0.0.1:8182"
+      RUST_LOG: "info"
+    ports:
+      - "8182:8181"
+    networks:
+      - icebergv2-net
+    # ⚠️ Pas de healthcheck ici : l'image Lakekeeper n'embarque pas curl/wget,
+    # tout test HTTP depuis l'intérieur du conteneur échoue avec "executable
+    # not found", même quand le serveur tourne parfaitement (cf. logs).
+    # Le conteneur "lakekeeper-init" ci-dessous gère lui-même l'attente.
+
+  # Bootstrap du catalogue (warehouse "lakehouse")
+  lakekeeper-init:
+    image: curlimages/curl:latest
+    container_name: icebergv2-lakekeeper-init
+    depends_on:
+      lakekeeper:
+        condition: service_started
+      minio-init:
+        condition: service_completed_successfully
+    networks:
+      - icebergv2-net
+    entrypoint: |
+      sh -c "
+        echo 'Attente du démarrage de Lakekeeper...';
+        for i in $(seq 1 30); do curl -sf http://lakekeeper:8181/management/v1/info >/dev/null 2>&1 && break; sleep 2; done;
+        echo '--- Bootstrap ---';
+        curl -s -w '\nHTTP_STATUS:%{http_code}\n' -X POST http://lakekeeper:8181/management/v1/bootstrap -H 'Content-Type: application/json' -d '{\"accept-terms-of-use\": true}';
+        echo '--- Création warehouse ---';
+        curl -s -w '\nHTTP_STATUS:%{http_code}\n' -X POST http://lakekeeper:8181/management/v1/warehouse -H 'Content-Type: application/json' -d '{\"warehouse-name\": \"lakehouse\", \"project-id\": \"00000000-0000-0000-0000-000000000000\", \"storage-profile\": {\"type\": \"s3\", \"bucket\": \"lakehouse\", \"region\": \"local\", \"endpoint\": \"http://minio:9010\", \"path-style-access\": true, \"flavor\": \"s3-compat\", \"sts-enabled\": true, \"remote-signing-enabled\": true}, \"storage-credential\": {\"type\": \"s3\", \"credential-type\": \"access-key\", \"aws-access-key-id\": \"minioadmin\", \"aws-secret-access-key\": \"minioadmin123\"}}';
+        echo '--- Liste des warehouses (vérification) ---';
+        curl -s http://lakekeeper:8181/management/v1/warehouse;
+        echo '';
+        echo 'Script terminé';
+      "
+
+  # ──────────────────────────────────────────────
+  # 4. JupyterLab + PySpark + Iceberg
+  # ──────────────────────────────────────────────
+  jupyter:
+    image: jupyter/pyspark-notebook:spark-3.4.0
+    container_name: icebergv2-jupyter
+    depends_on:
+      - minio
+    ports:
+      - "8889:8888"
+    environment:
+      JUPYTER_ENABLE_LAB: "yes"
+      JUPYTER_TOKEN: "smartlibrary2024v2"
+      SPARK_OPTS: "--driver-java-options=-Xms2g --driver-java-options=-Xmx4g"
+      # Clé API Groq (notebook 08 - enrichissement des métadonnées via LLM)
+      # À définir dans un fichier .env (non commité) : GROQ_API_KEY=gsk_xxx
+      GROQ_API_KEY: "${GROQ_API_KEY:-}"
+    volumes:
+      - ./notebooks:/home/jovyan/notebooks
+      - ./data:/home/jovyan/data
+      - ./scripts:/home/jovyan/scripts
+      - ./spark-conf:/home/jovyan/spark-conf
+      - ./config:/home/jovyan/config
+      - ./generateur:/home/jovyan/generateur
+    networks:
+      - icebergv2-net
+    user: root
+    command: >
+      bash -c "
+        pip install --quiet faker lxml pdfplumber groq polars pyyaml numpy &&
+        pip install --quiet apache-flink==1.17.0 || true &&
+        start-notebook.sh --NotebookApp.token='smartlibrary2024v2' --NotebookApp.ip='0.0.0.0'
+      "

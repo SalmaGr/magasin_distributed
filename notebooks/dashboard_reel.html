@@ -1,0 +1,389 @@
+
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Smart Library — Dashboard Données Réelles</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+:root {
+  --bg:#ffffff; --bg2:#ffffff; --bg3:#f8fafc; --border:#e2e8f0;
+  --a1:#2563eb; --a2:#93c5fd; --a3:#64748b; --a4:#1e293b;
+  --a5:#cbd5e1; --a6:#dc2626;
+  --t1:#0f172a; --t2:#64748b; --t3:#94a3b8;
+  --fh:'Inter',sans-serif; --fb:'Inter',sans-serif; --fm:'Inter',sans-serif;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:var(--bg); color:var(--t1); font-family:var(--fb); font-size:14px; -webkit-font-smoothing:antialiased; }
+header {
+  position:sticky; top:0; z-index:100;
+  background:var(--bg2);
+  border-bottom:1px solid var(--border);
+  padding:0 2rem; display:flex; align-items:center;
+  justify-content:space-between; height:60px;
+}
+.logo { display:flex; align-items:center; gap:12px; }
+.logo-icon {
+  width:34px; height:34px; border-radius:8px;
+  background:var(--a1);
+  display:flex; align-items:center; justify-content:center; font-size:18px;
+}
+.logo h1 { font-family:var(--fh); font-size:17px; font-weight:700; }
+.logo span { color:var(--t2); font-weight:400; }
+.header-right { display:flex; align-items:center; gap:16px; }
+.badge { padding:3px 10px; border-radius:20px; font-family:var(--fm); font-size:11px; border:1px solid; }
+.b-live { background:var(--bg3); border-color:var(--border); color:var(--t2); }
+.b-real { background:var(--bg3); border-color:var(--border); color:var(--t2); }
+.gen-date { font-family:var(--fm); font-size:11px; color:var(--t3); }
+.tabs { display:flex; gap:4px; padding:.8rem 2rem 0; border-bottom:1px solid var(--border); }
+.tab { padding:7px 16px; border:none; background:none; color:var(--t2); font-family:var(--fb); font-size:13px; cursor:pointer; border-bottom:2px solid transparent; transition:all .2s; white-space:nowrap; }
+.tab:hover { color:var(--t1); }
+.tab.on { color:var(--a1); border-bottom-color:var(--a1); }
+main { padding:1.5rem 2rem; position:relative; }
+.panel { display:none; }
+.panel.on { display:block; }
+.kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(165px,1fr)); gap:12px; margin-bottom:1.5rem; }
+.kpi { background:var(--bg2); border:1px solid var(--border); border-radius:12px; padding:1.1rem; border-top:2px solid var(--kc,var(--a1)); transition:box-shadow .2s; }
+.kpi:hover { box-shadow:0 4px 14px rgba(17,24,39,.06); }
+.kpi-lbl { font-size:11px; color:var(--t3); text-transform:uppercase; letter-spacing:.07em; margin-bottom:7px; }
+.kpi-val { font-family:var(--fh); font-size:26px; font-weight:800; line-height:1; margin-bottom:5px; }
+.kpi-sub { font-size:11px; color:var(--t2); }
+.g2 { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:1.5rem; }
+.g3 { display:grid; grid-template-columns:2fr 1fr; gap:16px; margin-bottom:1.5rem; }
+.card { background:var(--bg2); border:1px solid var(--border); border-radius:12px; padding:1.2rem; box-shadow:0 1px 3px rgba(17,24,39,.04); }
+.card-full { grid-column:1/-1; }
+.ctitle { font-family:var(--fh); font-size:12px; font-weight:600; color:var(--t2); text-transform:uppercase; letter-spacing:.06em; margin-bottom:1rem; display:flex; align-items:center; gap:8px; }
+.dot { width:6px; height:6px; border-radius:50%; background:var(--dc,var(--a1)); flex-shrink:0; }
+canvas { max-height:260px; }
+.tbl { width:100%; border-collapse:collapse; font-size:12px; }
+.tbl th { text-align:left; padding:7px 10px; font-size:10px; text-transform:uppercase; letter-spacing:.05em; color:var(--t3); border-bottom:1px solid var(--border); }
+.tbl td { padding:9px 10px; border-bottom:1px solid var(--border); color:var(--t1); }
+.tbl tr:last-child td { border-bottom:none; }
+.tbl tr:hover td { background:rgba(37,99,235,.04); }
+.pill { padding:2px 8px; border-radius:20px; font-size:11px; }
+.cow-box { background:var(--bg3); border:1px solid rgba(59,130,246,.3); border-radius:10px; padding:1rem; text-align:center; }
+.mor-box { background:var(--bg3); border:1px solid rgba(239,68,68,.3); border-radius:10px; padding:1rem; text-align:center; }
+.big-num { font-family:var(--fh); font-size:36px; font-weight:800; margin:.3rem 0; }
+.sub-lbl { font-size:11px; color:var(--t2); }
+.cow-txt { color:var(--a1); }
+.mor-txt { color:var(--a6); }
+.vs { display:flex; gap:12px; margin-bottom:1rem; }
+.vs > * { flex:1; }
+.fact-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:.8rem; }
+.fact { background:var(--bg3); border:1px solid var(--border); border-radius:8px; padding:.7rem; }
+.fact-lbl { font-size:10px; color:var(--t3); text-transform:uppercase; letter-spacing:.05em; margin-bottom:4px; }
+.fact-val { font-family:var(--fm); font-size:13px; color:var(--t1); }
+@media(max-width:800px) { .g2,.g3 { grid-template-columns:1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">
+    <div class="logo-icon">📚</div>
+    <h1>Smart Library <span>/ Données Réelles</span></h1>
+  </div>
+  <div class="header-right">
+    <span class="badge b-live">● LIVE DATA</span>
+    <span class="badge b-real">MinIO + Iceberg</span>
+    <span class="gen-date" id="gdate"></span>
+  </div>
+</header>
+
+<nav class="tabs">
+  <button class="tab on" onclick="sw('apercu',this)">Vue d'ensemble</button>
+  <button class="tab" onclick="sw('ventes',this)">Ventes</button>
+  <button class="tab" onclick="sw('livres',this)">Top Livres</button>
+  <button class="tab" onclick="sw('users',this)">Utilisateurs</button>
+  <button class="tab" onclick="sw('stock',this)">Stock</button>
+</nav>
+
+<main>
+<script>const D = {"kpis": {"commandes": 5000, "utilisateurs": 1000, "livres": 500, "ca": 293297.83, "panier_moyen": 89.75, "taux_livraison": 65.4}, "ca_mensuel": {"labels": ["24/07", "24/08", "24/09", "24/10", "24/11", "24/12", "25/01", "25/02", "25/03", "25/04", "25/05", "25/06", "25/07", "25/08", "25/09", "25/10", "25/11", "25/12", "26/01", "26/02", "26/03", "26/04", "26/05", "26/06", "26/07"], "values": [6747.77, 12457.06, 12251.21, 13102.71, 12206.89, 11070.83, 11591.64, 10210.05, 12713.2, 12407.73, 12170.34, 12250.6, 13547.64, 11362.1, 12012.05, 12664.01, 11633.43, 15117.91, 12636.09, 10977.68, 12823.89, 11575.26, 12962.04, 12925.57, 3880.13], "cmd": [86, 143, 143, 153, 132, 124, 145, 112, 143, 137, 130, 137, 147, 132, 132, 134, 123, 154, 133, 126, 145, 138, 133, 143, 43]}, "genres": {"labels": ["Développement personnel", "Jeunesse", "Biographie", "Policier", "Poésie", "Philosophie", "Roman", "Science-fiction", "Sciences", "Histoire"], "ca": [41871.82, 41422.62, 41248.41, 40498.03, 40101.32, 39152.78, 35803.56, 35404.89, 34748.29, 33677.87], "nb": [451, 451, 470, 440, 444, 443, 403, 404, 379, 380]}, "statuts": {"labels": ["livré", "en_cours", "annulé", "remboursé"], "values": [3268, 997, 484, 251]}, "pays": {"labels": ["Tunisie", "Maroc", "France", "Algérie"], "ca": [123172.94, 79243.8, 61082.51, 29798.58]}, "top_livres": {"titres": ["Air Poitrine Refuser Alor…", "Hors Marquer Rien Mine", "Écraser Connaître Dormir …", "Regard Bientôt Attaquer", "Par", "Regretter Ramasser Marque…", "Ton Habiller Accompagner …", "Paupière Vaincre Figurer", "Réel Vêtement", "Plein Joie Pousser Répand…"], "ventes": [69, 66, 54, 53, 50, 49, 48, 46, 45, 45], "scores": [15.17, 9.33, 3.83, 3.17, 5.33, 7.5, 2.33, 7.5, 5.17, 2.67], "notes": [1.9, 1.1, 2.9, 2.0, 4.2, 1.4, 3.8, 3.7, 2.7, 3.0]}, "rfm": {"labels": ["Champion", "À risque", "Inactif", "Client fidèle", "Ordinaire", "Nouveau prometteur"], "nb": [291, 216, 204, 105, 105, 72], "ca_moy": [495.57, 441.06, 209.14, 576.22, 254.16, 202.69]}, "stock": {"labels": ["Suffisant", "Faible", "Alerte", "Rupture"], "values": [417, 89, 22, 2]}, "horaires": {"labels": ["Nuit", "Matin", "Après-midi", "Soirée"], "values": [1505, 1252, 1221, 1022]}, "segments": {"labels": ["VIP", "Régulier", "Nouveau"], "values": [614, 283, 103]}, "generated_at": "2026-07-14T08:59:59.276032"};</script>
+
+<!-- VUE D'ENSEMBLE -->
+<div class="panel on" id="p-apercu">
+  <div class="kpis" id="kpi-grid"></div>
+  <div class="g2">
+    <div class="card"><div class="ctitle"><span class="dot" style="--dc:var(--a1)"></span>CA mensuel (€)</div><canvas id="cCA"></canvas></div>
+    <div class="card"><div class="ctitle"><span class="dot" style="--dc:var(--a3)"></span>Ventes par genre</div><canvas id="cGenre"></canvas></div>
+  </div>
+  <div class="g2">
+    <div class="card"><div class="ctitle"><span class="dot" style="--dc:var(--a4)"></span>Statuts des commandes</div><canvas id="cStatuts"></canvas></div>
+    <div class="card"><div class="ctitle"><span class="dot" style="--dc:var(--a5)"></span>CA par pays</div><canvas id="cPays"></canvas></div>
+  </div>
+</div>
+
+<!-- VENTES -->
+<div class="panel" id="p-ventes">
+  <div class="card card-full" style="margin-bottom:16px">
+    <div class="ctitle"><span class="dot" style="--dc:var(--a1)"></span>Évolution CA mensuel + nb commandes</div>
+    <canvas id="cVentes" style="max-height:300px"></canvas>
+  </div>
+  <div class="g2">
+    <div class="card"><div class="ctitle"><span class="dot" style="--dc:var(--a2)"></span>Tranches horaires des commandes</div><canvas id="cHoraires"></canvas></div>
+    <div class="card"><div class="ctitle"><span class="dot" style="--dc:var(--a5)"></span>CA par genre (top 6)</div><canvas id="cGenreCA"></canvas></div>
+  </div>
+</div>
+
+<!-- TOP LIVRES -->
+<div class="panel" id="p-livres">
+  <div class="g3" style="margin-bottom:16px">
+    <div class="card"><div class="ctitle"><span class="dot" style="--dc:var(--a5)"></span>Top 10 — Exemplaires vendus</div><canvas id="cTopVentes"></canvas></div>
+    <div class="card"><div class="ctitle"><span class="dot" style="--dc:var(--a1)"></span>Score tendance top 10</div><canvas id="cTopScores"></canvas></div>
+  </div>
+  <div class="card">
+    <div class="ctitle"><span class="dot" style="--dc:var(--a5)"></span>Classement complet top 10</div>
+    <table class="tbl"><thead><tr><th>#</th><th>Titre</th><th>Ventes</th><th>Note</th><th>Score tendance</th></tr></thead>
+    <tbody id="tbl-livres"></tbody></table>
+  </div>
+</div>
+
+<!-- UTILISATEURS -->
+<div class="panel" id="p-users">
+  <div class="g2">
+    <div class="card"><div class="ctitle"><span class="dot" style="--dc:var(--a3)"></span>Segments RFM</div><canvas id="cRFM"></canvas></div>
+    <div class="card"><div class="ctitle"><span class="dot" style="--dc:var(--a1)"></span>CA moyen par segment RFM</div><canvas id="cRFMca"></canvas></div>
+  </div>
+  <div class="g2" style="margin-top:16px">
+    <div class="card"><div class="ctitle"><span class="dot" style="--dc:var(--a4)"></span>Segments Silver (VIP/Régulier/Nouveau)</div><canvas id="cSeg"></canvas></div>
+    <div class="card">
+      <div class="ctitle"><span class="dot" style="--dc:var(--a5)"></span>Résumé utilisateurs</div>
+      <div id="user-facts"></div>
+    </div>
+  </div>
+</div>
+
+<!-- STOCK -->
+<div class="panel" id="p-stock">
+  <div class="g2">
+    <div class="card"><div class="ctitle"><span class="dot" style="--dc:var(--a6)"></span>Stock par statut</div><canvas id="cStock"></canvas></div>
+    <div class="card">
+      <div class="ctitle"><span class="dot" style="--dc:var(--a4)"></span>Résumé inventaire</div>
+      <div id="stock-facts"></div>
+    </div>
+  </div>
+</div>
+
+<!-- HUDI COW vs MOR -->
+
+</main>
+
+<script>
+const C = (r,g,b,a=1) => `rgba(${r},${g},${b},${a})`;
+const PALETTE = [
+  C(37,99,235,.9), C(96,165,250,.9), C(148,163,184,.9),
+  C(30,41,59,.85), C(203,213,225,.9), C(100,116,139,.6),
+  C(37,99,235,.55), C(148,163,184,.5), C(30,41,59,.5), C(203,213,225,.6)
+];
+
+const BASE = {
+  responsive:true, maintainAspectRatio:true,
+  plugins:{
+    legend:{ labels:{ color:'#6b7280', font:{ family:'Inter', size:11 }, boxWidth:10 } },
+    tooltip:{ backgroundColor:'#111827', borderColor:'#111827', borderWidth:1,
+              titleColor:'#ffffff', bodyColor:'#d1d5db', padding:10 }
+  },
+  scales:{
+    x:{ grid:{ color:'rgba(17,24,39,.06)' }, ticks:{ color:'#9ca3af', font:{ family:'Inter', size:10 } } },
+    y:{ grid:{ color:'rgba(17,24,39,.06)' }, ticks:{ color:'#9ca3af', font:{ family:'Inter', size:10 } } }
+  }
+};
+
+function mk(id, type, data, extra={}) {
+  const ctx = document.getElementById(id);
+  if (!ctx) return;
+  return new Chart(ctx, { type, data, options:{ ...BASE, ...extra } });
+}
+
+function sw(id, btn) {
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('on'));
+  document.querySelectorAll('.tab').forEach(b => b.classList.remove('on'));
+  document.getElementById('p-' + id).classList.add('on');
+  btn.classList.add('on');
+}
+
+// ── Init ──────────────────────────────────────────────────────
+document.getElementById('gdate').textContent =
+  'Généré le ' + new Date(D.generated_at).toLocaleString('fr-FR');
+
+// ── KPIs ──────────────────────────────────────────────────────
+const kpiCfg = [
+  { lbl:'Commandes',    val: D.kpis.commandes.toLocaleString('fr'), sub:'total historique',        c:'var(--a1)' },
+  { lbl:'CA livré',     val: Math.floor(D.kpis.ca) + ' €', sub:'hors remboursements',    c:'var(--a4)' },
+  { lbl:'Utilisateurs', val: D.kpis.utilisateurs.toLocaleString('fr'), sub:'dans le système',     c:'var(--a2)' },
+  { lbl:'Livres',       val: D.kpis.livres.toLocaleString('fr'),    sub:'en catalogue Silver',    c:'var(--a5)' },
+  { lbl:'Panier moyen', val: D.kpis.panier_moyen + ' €',            sub:'par commande livrée',    c:'var(--a3)' },
+  { lbl:'Taux livraison',val:D.kpis.taux_livraison + '%',           sub:'commandes réussies',     c:'var(--a6)' },
+];
+document.getElementById('kpi-grid').innerHTML = kpiCfg.map(k =>
+  `<div class="kpi" style="--kc:${k.c}">
+    <div class="kpi-lbl">${k.lbl}</div>
+    <div class="kpi-val">${k.val}</div>
+    <div class="kpi-sub">${k.sub}</div>
+  </div>`
+).join('');
+
+// ── Vue d'ensemble ────────────────────────────────────────────
+mk('cCA','bar',{
+  labels: D.ca_mensuel.labels,
+  datasets: [{
+    label:'CA (€)', data: D.ca_mensuel.values,
+    backgroundColor: C(59,130,246,.7), borderColor: C(59,130,246),
+    borderWidth:1, borderRadius:4
+  },{
+    label:'Commandes', data: D.ca_mensuel.cmd,
+    type:'line', borderColor: C(6,182,212),
+    borderWidth:2, pointRadius:3, fill:false, tension:.4,
+    yAxisID:'y2'
+  }]
+},{
+  scales:{
+    x: BASE.scales.x,
+    y: { ...BASE.scales.y, position:'left' },
+    y2: { ...BASE.scales.y, position:'right', grid:{ drawOnChartArea:false } }
+  }
+});
+
+mk('cGenre','doughnut',{
+  labels: D.genres.labels,
+  datasets:[{ data: D.genres.nb, backgroundColor: PALETTE, borderWidth:0, hoverOffset:6 }]
+},{ scales:{} });
+
+mk('cStatuts','pie',{
+  labels: D.statuts.labels,
+  datasets:[{ data: D.statuts.values,
+    backgroundColor:[C(37,99,235,.85),C(148,163,184,.85),C(220,38,38,.85),C(100,116,139,.6)],
+    borderWidth:0, hoverOffset:6 }]
+},{ scales:{} });
+
+mk('cPays','bar',{
+  labels: D.pays.labels,
+  datasets:[{ label:'CA (€)', data: D.pays.ca,
+    backgroundColor: PALETTE, borderRadius:4, borderWidth:0 }]
+},{ plugins:{ ...BASE.plugins, legend:{ display:false } } });
+
+// ── Ventes ────────────────────────────────────────────────────
+mk('cVentes','bar',{
+  labels: D.ca_mensuel.labels,
+  datasets:[{
+    label:'CA (€)', data: D.ca_mensuel.values,
+    backgroundColor: C(59,130,246,.6), borderRadius:4, borderWidth:0
+  },{
+    label:'Commandes', data: D.ca_mensuel.cmd,
+    type:'line', borderColor: C(100,116,139),
+    borderWidth:2, pointRadius:3, fill:false, tension:.4, yAxisID:'y2'
+  }]
+},{
+  scales:{
+    x: BASE.scales.x,
+    y:{ ...BASE.scales.y, position:'left' },
+    y2:{ ...BASE.scales.y, position:'right', grid:{ drawOnChartArea:false } }
+  }
+});
+
+mk('cHoraires','bar',{
+  labels: D.horaires.labels,
+  datasets:[{ label:'Commandes', data: D.horaires.values,
+    backgroundColor: PALETTE, borderRadius:4, borderWidth:0 }]
+},{ plugins:{ ...BASE.plugins, legend:{ display:false } } });
+
+mk('cGenreCA','bar',{
+  labels: D.genres.labels.slice(0,6),
+  datasets:[{ label:'CA (€)', data: D.genres.ca.slice(0,6),
+    backgroundColor: PALETTE, borderRadius:4, borderWidth:0 }]
+},{
+  indexAxis:'y',
+  plugins:{ ...BASE.plugins, legend:{ display:false } }
+});
+
+// ── Top Livres ────────────────────────────────────────────────
+mk('cTopVentes','bar',{
+  labels: D.top_livres.titres,
+  datasets:[{ label:'Exemplaires vendus', data: D.top_livres.ventes,
+    backgroundColor: D.top_livres.ventes.map((_,i) =>
+      i===0?C(37,99,235,.95):i<3?C(96,165,250,.85):C(203,213,225,.6)
+    ), borderRadius:4, borderWidth:0 }]
+},{
+  indexAxis:'y',
+  plugins:{ ...BASE.plugins, legend:{ display:false } }
+});
+
+mk('cTopScores','bar',{
+  labels: D.top_livres.titres,
+  datasets:[{ label:'Score tendance', data: D.top_livres.scores,
+    backgroundColor: C(6,182,212,.8), borderRadius:4, borderWidth:0 }]
+},{
+  indexAxis:'y',
+  plugins:{ ...BASE.plugins, legend:{ display:false } }
+});
+
+document.getElementById('tbl-livres').innerHTML =
+  D.top_livres.titres.map((t,i) => `
+  <tr>
+    <td style="font-family:var(--fm);color:${i<3?'var(--a5)':'var(--t3)'};font-weight:700">${i+1}</td>
+    <td>${t}</td>
+    <td>${D.top_livres.ventes[i]}</td>
+    <td style="color:var(--t1)">${'★'.repeat(Math.round(D.top_livres.notes[i]))}${D.top_livres.notes[i]}</td>
+    <td>
+      <div style="display:flex;align-items:center;gap:8px">
+        <div style="flex:1;height:4px;background:var(--bg3);border-radius:2px">
+          <div style="height:100%;width:${D.top_livres.scores[i]/10*100}%;background:linear-gradient(90deg,var(--a1),var(--a2));border-radius:2px"></div>
+        </div>
+        <span style="font-family:var(--fm);font-size:11px;color:var(--t2)">${D.top_livres.scores[i]}</span>
+      </div>
+    </td>
+  </tr>`
+).join('');
+
+// ── Utilisateurs ──────────────────────────────────────────────
+mk('cRFM','doughnut',{
+  labels: D.rfm.labels,
+  datasets:[{ data: D.rfm.nb, backgroundColor: PALETTE, borderWidth:0, hoverOffset:8 }]
+},{ scales:{} });
+
+mk('cRFMca','bar',{
+  labels: D.rfm.labels,
+  datasets:[{ label:'CA moyen (€)', data: D.rfm.ca_moy,
+    backgroundColor: PALETTE, borderRadius:4, borderWidth:0 }]
+},{ plugins:{ ...BASE.plugins, legend:{ display:false } } });
+
+mk('cSeg','doughnut',{
+  labels: D.segments.labels,
+  datasets:[{ data: D.segments.values,
+    backgroundColor:[C(30,41,59,.85),C(37,99,235,.85),C(148,163,184,.85)],
+    borderWidth:0, hoverOffset:6 }]
+},{ scales:{} });
+
+document.getElementById('user-facts').innerHTML = `
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+    ${D.segments.labels.map((l,i) => `
+      <div style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:.7rem">
+        <div style="font-size:10px;color:var(--t3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">${l}</div>
+        <div style="font-family:var(--fm);font-size:20px;font-weight:700;color:var(--t1)">${D.segments.values[i]}</div>
+      </div>`).join('')}
+  </div>`;
+
+// ── Stock ─────────────────────────────────────────────────────
+mk('cStock','doughnut',{
+  labels: D.stock.labels,
+  datasets:[{ data: D.stock.values,
+    backgroundColor:[C(220,38,38,.85),C(203,213,225,.9),C(37,99,235,.85),C(100,116,139,.6)],
+    borderWidth:0, hoverOffset:6 }]
+},{ scales:{} });
+
+document.getElementById('stock-facts').innerHTML = `
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+    ${D.stock.labels.map((l,i) => `
+      <div style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:.7rem">
+        <div style="font-size:10px;color:var(--t3);text-transform:uppercase;margin-bottom:4px">${l}</div>
+        <div style="font-family:var(--fm);font-size:20px;font-weight:700">${D.stock.values[i]} livres</div>
+      </div>`).join('')}
+  </div>`;
+
+
+
+</script>
+</body>
+</html>

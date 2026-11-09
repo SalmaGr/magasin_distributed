@@ -1,0 +1,222 @@
+# ============================================================================
+#  DGLH — Lakehouse Iceberg DISTRIBUÉ (simulé sur 1 machine, plusieurs conteneurs)
+#   • Stockage  : MinIO distribué (4 nœuds, erasure coding) derrière un répartiteur nginx  -> http://minio:9000
+#   • Génération: 4 conteneurs « gen-i » qui se partagent les tâches (profil "gen")
+#   • Calcul    : cluster Spark standalone (1 master + 3 workers) ; le driver est le conteneur Jupyter
+#   • Catalogue : Lakekeeper (REST Iceberg) + PostgreSQL
+#  Démarrage : voir README_DISTRIBUE.md
+# ============================================================================
+name: dglh-distribue
+
+networks:
+  dglh-net:
+    driver: bridge
+
+volumes:
+  minio1-data: { name: dglh-minio1-data }
+  minio2-data: { name: dglh-minio2-data }
+  minio3-data: { name: dglh-minio3-data }
+  minio4-data: { name: dglh-minio4-data }
+  dglh-pg-data: { name: dglh-pg-data }
+  gen0-scratch: { name: dglh-gen0-scratch }
+  gen1-scratch: { name: dglh-gen1-scratch }
+  gen2-scratch: { name: dglh-gen2-scratch }
+  gen3-scratch: { name: dglh-gen3-scratch }
+
+x-minio-node: &minio-node
+  image: minio/minio:latest
+  networks: [dglh-net]
+  environment:
+    MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+    MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+  command: server http://minio{1...4}/data --console-address ":9001"
+  healthcheck:
+    test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+    interval: 15s
+    timeout: 10s
+    retries: 10
+
+x-spark-env: &spark-env
+  SPARK_CONF_DIR: /opt/spark-conf
+  PYSPARK_PYTHON: python3
+  SPARK_NO_DAEMONIZE: "true"
+
+x-spark-worker: &spark-worker
+  image: jupyter/pyspark-notebook:spark-3.4.0
+  networks: [dglh-net]
+  depends_on: [spark-master]
+  environment: *spark-env
+  volumes:
+    - ./spark-conf:/opt/spark-conf:ro
+  command: >
+    /usr/local/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
+    --cores ${SPARK_WORKER_CORES:-2} --memory ${SPARK_WORKER_MEMORY:-3g} --webui-port 8081 --work-dir /tmp/spark-work
+
+x-gen: &gen
+  build: ./generateur
+  restart: "no"
+  profiles: ["gen"]
+  networks: [dglh-net]
+  depends_on:
+    minio-init:
+      condition: service_completed_successfully
+  environment:
+    S3_ENDPOINT: http://minio:9000
+    AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
+    AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+    GEN_MODE: ${GEN_MODE:-sample}
+    GEN_WORKERS: ${GEN_WORKERS:-1}
+    GEN_SCRATCH: /scratch
+  deploy:
+    resources:
+      limits:
+        cpus: "${GEN_CPUS:-1.5}"
+        memory: ${GEN_MEM:-3g}
+
+services:
+  # ───────── 1. Stockage objet distribué ─────────
+  minio1: { <<: *minio-node, hostname: minio1, container_name: dglh-minio1, volumes: ["minio1-data:/data"] }
+  minio2: { <<: *minio-node, hostname: minio2, container_name: dglh-minio2, volumes: ["minio2-data:/data"] }
+  minio3: { <<: *minio-node, hostname: minio3, container_name: dglh-minio3, volumes: ["minio3-data:/data"] }
+  minio4: { <<: *minio-node, hostname: minio4, container_name: dglh-minio4, volumes: ["minio4-data:/data"] }
+
+  minio:                                   # répartiteur de charge : point d'entrée S3 unique (http://minio:9000)
+    image: nginx:alpine
+    container_name: dglh-minio-lb
+    depends_on:
+      minio1: { condition: service_healthy }
+      minio2: { condition: service_healthy }
+      minio3: { condition: service_healthy }
+      minio4: { condition: service_healthy }
+    ports:
+      - "9100:9000"                        # API S3
+      - "9101:9001"                        # console web MinIO
+    volumes:
+      - ./distribue/nginx-minio.conf:/etc/nginx/nginx.conf:ro
+    networks: [dglh-net]
+
+  minio-init:
+    image: minio/mc:latest
+    container_name: dglh-minio-init
+    depends_on: [minio]
+    networks: [dglh-net]
+    entrypoint: |
+      sh -c "
+        until mc alias set local http://minio:9000 ${MINIO_ROOT_USER:-minioadmin} ${MINIO_ROOT_PASSWORD:-minioadmin123}; do echo 'attente MinIO...'; sleep 3; done;
+        mc mb --ignore-existing local/lakehouse local/raw local/raw-echantillon;
+        mc admin info local;
+        echo 'Buckets lakehouse, raw, raw-echantillon prêts (MinIO distribué)';
+      "
+
+  # ───────── 2. Catalogue Iceberg (Lakekeeper) ─────────
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: dglh-postgres
+    environment: { POSTGRES_USER: lakekeeper, POSTGRES_PASSWORD: lakekeeper, POSTGRES_DB: lakekeeper }
+    ports: ["5543:5432"]
+    volumes: ["dglh-pg-data:/var/lib/postgresql/data"]
+    networks: [dglh-net]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lakekeeper -d lakekeeper"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  lakekeeper-migrate:
+    image: quay.io/lakekeeper/catalog:latest
+    container_name: dglh-lakekeeper-migrate
+    command: ["migrate"]
+    depends_on: { postgres: { condition: service_healthy } }
+    environment: &lk-env
+      LAKEKEEPER__PG_ENCRYPTION_KEY: "dglh-thesis-encryption-key"
+      LAKEKEEPER__PG_DATABASE_URL_READ: "postgresql://lakekeeper:lakekeeper@postgres:5432/lakekeeper"
+      LAKEKEEPER__PG_DATABASE_URL_WRITE: "postgresql://lakekeeper:lakekeeper@postgres:5432/lakekeeper"
+      RUST_LOG: "info"
+    networks: [dglh-net]
+
+  lakekeeper:
+    image: quay.io/lakekeeper/catalog:latest
+    container_name: dglh-lakekeeper
+    command: ["serve"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      minio: { condition: service_started }
+      lakekeeper-migrate: { condition: service_completed_successfully }
+    environment:
+      <<: *lk-env
+      LAKEKEEPER__ALLOW_ORIGIN: "http://localhost:8282,http://127.0.0.1:8282"
+    ports: ["8282:8181"]
+    networks: [dglh-net]
+
+  lakekeeper-init:
+    image: curlimages/curl:latest
+    container_name: dglh-lakekeeper-init
+    depends_on:
+      lakekeeper: { condition: service_started }
+      minio-init: { condition: service_completed_successfully }
+    networks: [dglh-net]
+    entrypoint: |
+      sh -c "
+        for i in $(seq 1 30); do curl -sf http://lakekeeper:8181/management/v1/info >/dev/null 2>&1 && break; sleep 2; done;
+        curl -s -X POST http://lakekeeper:8181/management/v1/bootstrap -H 'Content-Type: application/json' -d '{\"accept-terms-of-use\": true}';
+        curl -s -X POST http://lakekeeper:8181/management/v1/warehouse -H 'Content-Type: application/json' -d '{\"warehouse-name\": \"lakehouse\", \"project-id\": \"00000000-0000-0000-0000-000000000000\", \"storage-profile\": {\"type\": \"s3\", \"bucket\": \"lakehouse\", \"region\": \"local\", \"endpoint\": \"http://minio:9000\", \"path-style-access\": true, \"flavor\": \"s3-compat\", \"sts-enabled\": true, \"remote-signing-enabled\": true}, \"storage-credential\": {\"type\": \"s3\", \"credential-type\": \"access-key\", \"aws-access-key-id\": \"${MINIO_ROOT_USER:-minioadmin}\", \"aws-secret-access-key\": \"${MINIO_ROOT_PASSWORD:-minioadmin123}\"}}';
+        curl -s http://lakekeeper:8181/management/v1/warehouse; echo; echo 'Lakekeeper prêt';
+      "
+
+  # ───────── 3. Cluster Spark (calcul distribué) ─────────
+  spark-master:
+    image: jupyter/pyspark-notebook:spark-3.4.0
+    container_name: dglh-spark-master
+    hostname: spark-master
+    environment: *spark-env
+    ports: ["8180:8080", "7177:7077"]       # 8080 = interface web du master
+    volumes: ["./spark-conf:/opt/spark-conf:ro"]
+    networks: [dglh-net]
+    command: /usr/local/spark/bin/spark-class org.apache.spark.deploy.master.Master --host spark-master --port 7077 --webui-port 8080
+
+  spark-worker-1: { <<: *spark-worker, hostname: spark-worker-1, container_name: dglh-spark-worker-1 }
+  spark-worker-2: { <<: *spark-worker, hostname: spark-worker-2, container_name: dglh-spark-worker-2 }
+  spark-worker-3: { <<: *spark-worker, hostname: spark-worker-3, container_name: dglh-spark-worker-3 }
+
+  jupyter:                                  # = DRIVER Spark (soumet les jobs au cluster)
+    image: jupyter/pyspark-notebook:spark-3.4.0
+    container_name: dglh-jupyter
+    hostname: jupyter
+    depends_on: [spark-master, minio-init]
+    ports: ["8989:8888", "4140:4040"]       # 4040 = interface web du job en cours
+    environment:
+      <<: *spark-env
+      SPARK_NO_DAEMONIZE: ""
+      JUPYTER_ENABLE_LAB: "yes"
+      JUPYTER_TOKEN: "dglh2024"
+      GROQ_API_KEY: "${GROQ_API_KEY:-}"
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+    volumes:
+      - ./notebooks:/home/jovyan/notebooks
+      - ./data:/home/jovyan/data
+      - ./scripts:/home/jovyan/scripts
+      - ./spark-conf:/opt/spark-conf:ro
+      - ./spark-conf:/home/jovyan/spark-conf
+      - ./config:/home/jovyan/config
+      - ./spark_jobs:/home/jovyan/spark_jobs
+      - ./generateur:/home/jovyan/generateur
+    networks: [dglh-net]
+    user: root
+    command: >
+      bash -c "
+        pip install --quiet faker lxml pdfplumber groq polars pyyaml numpy boto3 &&
+        start-notebook.sh --NotebookApp.token='dglh2024' --NotebookApp.ip='0.0.0.0'
+      "
+
+  # ───────── 4. Génération distribuée (profil "gen") ─────────
+  gen-0: { <<: *gen, container_name: dglh-gen-0, command: ["python", "distribue.py", "gen", "--shard", "0/4"], volumes: ["gen0-scratch:/scratch"] }
+  gen-1: { <<: *gen, container_name: dglh-gen-1, command: ["python", "distribue.py", "gen", "--shard", "1/4"], volumes: ["gen1-scratch:/scratch"] }
+  gen-2: { <<: *gen, container_name: dglh-gen-2, command: ["python", "distribue.py", "gen", "--shard", "2/4"], volumes: ["gen2-scratch:/scratch"] }
+  gen-3: { <<: *gen, container_name: dglh-gen-3, command: ["python", "distribue.py", "gen", "--shard", "3/4"], volumes: ["gen3-scratch:/scratch"] }
+  gen-finalize:
+    <<: *gen
+    container_name: dglh-gen-finalize
+    profiles: ["finalize"]
+    command: ["python", "distribue.py", "finalize"]
+    volumes: ["gen0-scratch:/scratch"]

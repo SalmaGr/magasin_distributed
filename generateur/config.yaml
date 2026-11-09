@@ -1,0 +1,97 @@
+# ============================================================
+#  config.yaml — Générateur RAW "grande surface tunisienne" (style Aziza)
+#  Tout le générateur est piloté d'ici.
+#     python run_all.py --estimate          # extrapolation du volume complet
+#     python run_all.py                     # selon "mode" ci-dessous
+#     python run_all.py --mode full
+# ============================================================
+mode: sample                 # sample | full
+graine: 20241001             # reproductibilité (même graine => mêmes fichiers)
+sortie: ../data              # relatif à ce fichier ; -> <sortie>/raw (full) ou <sortie>/raw_echantillon (sample)
+compression: none            # none | gz  (appliquée aux CSV / JSONL / XML, pas aux PDF)
+max_workers: 4               # 1 = mode séquentiel (débogage)
+volume_cible_go: 40          # critère d'acceptation : ±10 %
+
+periode:
+  debut: 2024-10-01
+  fin: 2026-09-30
+
+echantillon:                 # 1 mois, 3 magasins (1 hyper, 1 super, 1 proximité)
+  debut: 2025-02-10          # couvre fin des soldes, pré-Ramadan et début du Ramadan 2025
+  fin: 2025-03-12
+  magasins: [magasin_01, magasin_03, magasin_11]
+  facteur_clients: 0.10      # réduit le nombre de personnes (clients) en échantillon
+  evolutions:                # en échantillon, évolutions de schéma à la frontière de mois (2025-03-01) :
+    produits_ajout_dt_maj: 2025-03-01      # chaque fichier d'un même mois a le même schéma -> ingestion Spark par mois cohérente
+    produits_renomme_unite: 2025-03-01
+    tickets_renomme_mp: 2025-03-01
+    lignes_ajout_pt_fid: 2025-03-01
+
+# ── Réseau : 20 magasins (magasin_01 … magasin_20) ──────────────
+# 01-02 hyper (Tunis, Sfax) · 03-10 super · 11-20 proximité (cf. referentiels.py)
+magasins:
+  hypermarche: {n: 2,  tickets_jour: 5000, caisses: 24, lignes_moy: 8.0, coef_prix: 0.97, effectif: 180, heures: [8, 22]}
+  supermarche: {n: 8,  tickets_jour: 2200, caisses: 10, lignes_moy: 6.0, coef_prix: 1.00, effectif: 70,  heures: [8, 21]}
+  proximite:   {n: 10, tickets_jour: 900,  caisses: 3,  lignes_moy: 3.6, coef_prix: 1.03, effectif: 20,  heures: [7, 22]}
+
+volumes:
+  produits: 2000
+  part_mixte: 0.12           # part des produits dans prod_x1 / art_divers
+  fournisseurs: 120
+  personnes: 800000          # personnes physiques distinctes (base des 3 sources clients)
+  part_crm: 0.70
+  part_fidelite: 0.55
+  part_web: 0.18
+  part_tickets_carte: 0.55   # part des tickets avec carte de fidélité
+  part_maj_clients: 0.03     # lignes de mise à jour dans les mois suivants
+
+paiements:                   # répartition du mode de paiement principal
+  ESP: 0.55
+  CB: 0.28
+  TR: 0.08
+  CHQ: 0.03
+  AUT: 0.02
+  MIXTE: 0.04
+
+# ── Défauts de qualité injectés (taux par cellule / par ligne) ──
+defauts:
+  nulls: 0.03
+  doublons_exacts: 0.01
+  doublons_clients: 0.02       # doublons intra-source de clients (saisie différente)
+  dates_mixtes: 0.03
+  orphelins: 0.005
+  aberrants: 0.002
+  telephones_varies: 0.15
+  texte: 0.03                  # accents supprimés / casse / espaces parasites
+
+# ── Évolutions de schéma (pour tester Iceberg) ──────────────────
+evolutions:
+  produits_ajout_dt_maj: 2025-06-01      # colonne dt_maj ajoutée aux exports produits
+  produits_renomme_unite: 2025-09-01     # unité (unt…) -> cond_vte
+  tickets_renomme_mp: 2025-05-01         # mp -> mode_paiement (tickets)
+  lignes_ajout_pt_fid: 2025-07-01        # colonne pt_fid ajoutée aux lignes de vente
+
+# ── Logs POS JSONL : "granularité" réglable pour viser ~10 Go ───
+pos_logs:
+  detail_ratio: 0.02          # part des tickets avec événements SCAN/PAY détaillés
+  erreurs_ratio: 0.012         # part des tickets avec un événement WARN/ERROR verbeux
+  heartbeat_min: 60            # un HEARTBEAT par caisse toutes les N minutes
+
+stock:
+  actif: true
+
+ecommerce:
+  commandes_jour: 900
+  evenements_jour: 21000       # clickstream
+  catalogue_pas_jours: 7       # snapshot du catalogue API
+
+avis:
+  posts_jour: 8600             # réseaux sociaux
+  formulaires_jour: 1400        # formulaire site (note + niveau de satisfaction)
+  emails_jour: 860
+  appels_jour: 1100
+
+documents:
+  factures_jour: {hypermarche: 93, supermarche: 37, proximite: 12}
+  contrats_par_fournisseur: 2
+  fiches_techniques_versions: 4
